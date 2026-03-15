@@ -498,8 +498,12 @@ void pmgr_dump_usb_devices(void)
             strstr(d->name, "DART")) {
             uintptr_t addr = pmgr_device_get_addr(0, d);
             u32 val = addr ? read32(addr) : 0;
+            const u8 *raw = (const u8 *)d;
             printf("pmgr:   %-20s psreg=%d psidx=%d addr=0x%lx val=0x%08x\n",
                    d->name, d->psreg_idx, d->addr_offset, addr, val);
+            printf("pmgr:     raw[8..15]: %02x %02x %02x %02x  %02x %02x %02x %02x\n",
+                   raw[8], raw[9], raw[10], raw[11],
+                   raw[12], raw[13], raw[14], raw[15]);
         }
     }
     printf("pmgr: pmgr1 reg[] map:\n");
