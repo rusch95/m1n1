@@ -43,6 +43,7 @@ struct pmgr_device {
 } PACKED;
 
 static int pmgr_initialized = 0;
+static bool pmgr1_mode = false; // t8140+: psreg_idx indexes reg[] directly, no ps-regs table
 
 static int pmgr_path[8];
 static int pmgr_offset;
@@ -58,6 +59,20 @@ static bool pmgr_u8id = false;
 
 static uintptr_t pmgr_get_psreg(u8 idx)
 {
+    if (pmgr1_mode) {
+        // t8140+: psreg_idx is a direct index into the reg array, no ps-regs table
+        u64 pmgr_reg;
+        if (adt_get_reg(adt, pmgr_path, "reg", idx, &pmgr_reg, NULL) < 0) {
+            printf("pmgr: pmgr1: reg[%d] not found in /arm-io/pmgr\n", idx);
+            return 0;
+        }
+        if (pmgr_reg == 0) {
+            printf("pmgr: pmgr1: reg[%d] resolved to null address\n", idx);
+            return 0;
+        }
+        return pmgr_reg;
+    }
+
     if (idx * 12 >= pmgr_ps_regs_len) {
         printf("pmgr: Index %d is out of bounds for ps-regs\n", idx);
         return 0;
@@ -77,6 +92,12 @@ static uintptr_t pmgr_get_psreg(u8 idx)
 
 int pmgr_set_mode(uintptr_t addr, u8 target_mode)
 {
+    u32 before = read32(addr);
+    printf("pmgr: [0x%lx] before=0x%08x actual=%x target=%x -> setting mode %x\n",
+           addr, before,
+           (unsigned)FIELD_GET(PMGR_PS_ACTUAL, before),
+           (unsigned)FIELD_GET(PMGR_PS_TARGET, before),
+           target_mode);
     mask32(addr, PMGR_PS_TARGET, FIELD_PREP(PMGR_PS_TARGET, target_mode));
     if (poll32(addr, PMGR_PS_ACTUAL, FIELD_PREP(PMGR_PS_ACTUAL, target_mode), PMGR_POLL_TIMEOUT) <
         0) {
@@ -140,6 +161,11 @@ static int pmgr_set_mode_recursive(u8 die, u16 id, u8 target_mode, bool recurse)
         return -1;
     }
 
+    if (pmgr1_mode && die != 0) {
+        printf("pmgr: pmgr1: multi-die not supported (die=%d requested)\n", die);
+        return -1;
+    }
+
     if (id == 0)
         return -1;
 
@@ -152,6 +178,8 @@ static int pmgr_set_mode_recursive(u8 die, u16 id, u8 target_mode, bool recurse)
         uintptr_t addr = pmgr_device_get_addr(die, device);
         if (!addr)
             return -1;
+        printf("pmgr: setting mode %x for %d.%s (psreg=%d off=%d) at 0x%lx\n",
+               target_mode, die, device->name, device->psreg_idx, device->addr_offset, addr);
         if (pmgr_set_mode(addr, target_mode))
             return -1;
     }
@@ -171,6 +199,8 @@ static int pmgr_set_mode_recursive(u8 die, u16 id, u8 target_mode, bool recurse)
         uintptr_t addr = pmgr_device_get_addr(die, device);
         if (!addr)
             return -1;
+        printf("pmgr: setting mode %x for %d.%s (psreg=%d off=%d) at 0x%lx\n",
+               target_mode, die, device->name, device->psreg_idx, device->addr_offset, addr);
         if (pmgr_set_mode(addr, target_mode))
             return -1;
     }
@@ -381,18 +411,23 @@ int pmgr_init(void)
 
     pmgr_ps_regs = adt_getprop(adt, pmgr_offset, "ps-regs", &pmgr_ps_regs_len);
     if (pmgr_ps_regs == NULL || pmgr_ps_regs_len == 0) {
-        printf("pmgr: Error getting /arm-io/pmgr ps-regs\n.");
-        return -1;
+        // t8140+ uses pmgr1: psreg_idx indexes reg[] directly, no ps-regs indirection
+        const char *compat = adt_getprop(adt, pmgr_offset, "compatible", NULL);
+        printf("pmgr: No ps-regs (compatible: %s) — enabling pmgr1 mode\n",
+               compat ? compat : "unknown");
+        pmgr1_mode = true;
     }
 
     pmgr_devices = adt_getprop(adt, pmgr_offset, "devices", &pmgr_devices_len);
     if (pmgr_devices == NULL || pmgr_devices_len == 0) {
-        printf("pmgr: Error getting /arm-io/pmgr devices.\n");
+        printf("pmgr: Error getting /arm-io/pmgr devices%s\n",
+               pmgr1_mode ? " (pmgr1 mode)" : "");
         return -1;
     }
 
     pmgr_devices_len /= sizeof(*pmgr_devices);
     pmgr_initialized = 1;
+
 
     printf("pmgr: Cleaning up device states...\n");
 
@@ -450,6 +485,30 @@ int pmgr_init(void)
     printf("pmgr: initialized, %d devices on %u dies found.\n", pmgr_devices_len, pmgr_dies);
 
     return 0;
+}
+
+void pmgr_dump_usb_devices(void)
+{
+    if (!pmgr1_mode)
+        return;
+    printf("pmgr: pmgr1 reg[] map:\n");
+    for (int i = 0; i < 16; i++) {
+        u64 base;
+        if (adt_get_reg(adt, pmgr_path, "reg", i, &base, NULL) < 0)
+            break;
+        printf("pmgr:   reg[%d] = 0x%lx\n", i, base);
+    }
+    printf("pmgr: pmgr1 USB/ATC/DART/DRD device scan:\n");
+    for (size_t i = 0; i < pmgr_devices_len; i++) {
+        const struct pmgr_device *d = &pmgr_devices[i];
+        if (strstr(d->name, "USB") || strstr(d->name, "ATC") || strstr(d->name, "DRD") ||
+            strstr(d->name, "DART")) {
+            uintptr_t addr = pmgr_device_get_addr(0, d);
+            u32 val = addr ? read32(addr) : 0;
+            printf("pmgr:   %-20s psreg=%d psidx=%d addr=0x%lx val=0x%08x\n",
+                   d->name, d->psreg_idx, d->addr_offset, addr, val);
+        }
+    }
 }
 
 u32 pmgr_get_feature(const char *name)

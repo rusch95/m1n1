@@ -235,6 +235,7 @@ static const struct atc_fuse_info atc_fuses_t8112_port1[] = {
 // Order "atc-phy" compatibles in reverse chronologically order to deal with mutliple compatible
 // strings in ADT atc-phy nodes.
 static const struct atc_fuse_hw atc_fuses[] = {
+    {"atc-phy,t8130", -1, NULL, 0}, // M3 Pro/Max; also used by t8140 (A18 Pro)
     {"atc-phy,t6020", -1, NULL, 0},
     {"atc-phy,t8112", 0, atc_fuses_t8112_port0, ARRAY_SIZE(atc_fuses_t8112_port0)},
     {"atc-phy,t8112", 1, atc_fuses_t8112_port1, ARRAY_SIZE(atc_fuses_t8112_port1)},

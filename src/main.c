@@ -133,6 +133,8 @@ void run_actions(void)
     }
 #endif
 
+    printf("Build: m1n1 %s (%s %s)\n", m1n1_version, __DATE__, __TIME__);
+    pmgr_dump_usb_devices();
     printf("Running proxy...\n");
 
     uartproxy_run(NULL);
@@ -140,7 +142,7 @@ void run_actions(void)
 
 void m1n1_main(void)
 {
-    printf("\n\nm1n1 %s\n", m1n1_version);
+    printf("\n\nm1n1 %s (asahi_neo debug build: %s %s)\n", m1n1_version, __DATE__, __TIME__);
     printf("Copyright The Asahi Linux Contributors\n");
     printf("Licensed under the MIT license\n\n");
 

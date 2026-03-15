@@ -32,4 +32,6 @@ int pmgr_set_mode(uintptr_t addr, u8 target_mode);
 
 u32 pmgr_get_feature(const char *name);
 
+void pmgr_dump_usb_devices(void);
+
 #endif

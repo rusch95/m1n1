@@ -60,9 +60,19 @@ static dart_dev_t *usb_dart_init(u32 idx)
 {
     int mapper_offset;
     char path[sizeof(FMT_DART_MAPPER_PATH)];
+    bool indexed = true;
 
     snprintf(path, sizeof(path), FMT_DART_MAPPER_PATH, idx, idx);
     mapper_offset = adt_path_offset(adt, path);
+    if (mapper_offset < 0 && idx == 0) {
+        // t8140 (A18 Pro) uses un-indexed node names: dart-usb, mapper-usb
+        strncpy(path, "/arm-io/dart-usb/mapper-usb", sizeof(path) - 1);
+        path[sizeof(path) - 1] = '\0';
+        mapper_offset = adt_path_offset(adt, path);
+        if (mapper_offset >= 0)
+            printf("usb: using un-indexed dart path (t8140 compat)\n");
+        indexed = false;
+    }
     if (mapper_offset < 0) {
         // Device not present
         return NULL;
@@ -74,7 +84,12 @@ static dart_dev_t *usb_dart_init(u32 idx)
         return NULL;
     }
 
-    snprintf(path, sizeof(path), FMT_DART_PATH, idx);
+    if (indexed)
+        snprintf(path, sizeof(path), FMT_DART_PATH, idx);
+    else {
+        strncpy(path, "/arm-io/dart-usb", sizeof(path) - 1);
+        path[sizeof(path) - 1] = '\0';
+    }
     return dart_init_adt(path, 1, dart_idx, false);
 }
 
@@ -89,6 +104,14 @@ static int usb_drd_get_regs(u32 idx, struct usb_drd_regs *regs)
 
     snprintf(drd_path, sizeof(drd_path), FMT_DRD_PATH, idx);
     adt_drd_offset = adt_path_offset_trace(adt, drd_path, adt_drd_path);
+    if (adt_drd_offset < 0 && idx == 0) {
+        // t8140 (A18 Pro) uses un-indexed node names: usb-drd, dart-usb
+        strncpy(drd_path, "/arm-io/usb-drd", sizeof(drd_path) - 1);
+        drd_path[sizeof(drd_path) - 1] = '\0';
+        adt_drd_offset = adt_path_offset_trace(adt, drd_path, adt_drd_path);
+        if (adt_drd_offset >= 0)
+            printf("usb: using un-indexed drd path (t8140 compat)\n");
+    }
     if (adt_drd_offset < 0) {
         // Nonexistent device
         return -1;
@@ -130,15 +153,36 @@ int usb_phy_bringup(u32 idx)
 
     snprintf(path, sizeof(path), FMT_ATC_PATH, idx);
     if (pmgr_adt_power_enable(path) < 0)
-        return -1;
+        printf("usb: pmgr_adt_power_enable(%s) failed (AON domain may already be on) — continuing\n",
+               path);
 
+    // dart-usb: on t8140 the node is un-indexed. Its clock-gates include ATC0_USB_AON
+    // which always times out, failing the pmgr call even though iBoot already left the
+    // dart powered. Try indexed then un-indexed; treat failure as non-fatal since the
+    // hardware may already be on.
     snprintf(path, sizeof(path), FMT_DART_PATH, idx);
-    if (pmgr_adt_power_enable(path) < 0)
-        return -1;
+    if (pmgr_adt_power_enable(path) < 0) {
+        if (idx == 0) {
+            if (pmgr_adt_power_enable("/arm-io/dart-usb") < 0)
+                printf("usb: dart pmgr failed (ATC0_USB_AON timeout expected on t8140) — continuing\n");
+        } else {
+            printf("usb: pmgr_adt_power_enable(%s) failed\n", path);
+            return -1;
+        }
+    }
 
+    // usb-drd: same ATC0_USB_AON timeout issue. Try indexed then un-indexed and
+    // continue — partial pmgr success may still enable the DWC3 clock gate.
     snprintf(path, sizeof(path), FMT_DRD_PATH, idx);
-    if (pmgr_adt_power_enable(path) < 0)
-        return -1;
+    if (pmgr_adt_power_enable(path) < 0) {
+        if (idx == 0) {
+            if (pmgr_adt_power_enable("/arm-io/usb-drd") < 0)
+                printf("usb: drd pmgr failed (ATC0_USB_AON timeout expected on t8140) — continuing\n");
+        } else {
+            printf("usb: pmgr_adt_power_enable(%s) failed\n", path);
+            return -1;
+        }
+    }
 
     write32(usb_regs.atc + 0x08, 0x01c1000f);
     write32(usb_regs.atc + 0x04, 0x00000003);
