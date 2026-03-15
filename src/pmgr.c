@@ -533,7 +533,14 @@ void pmgr_dump_usb_devices(void)
 {
     if (!pmgr1_mode)
         return;
-    printf("pmgr: pmgr1 first 3 USB/ATC device struct dumps:\n");
+    pmgr_log("pmgr: pmgr1 reg[] map:\n");
+    for (int i = 0; i < 16; i++) {
+        u64 base;
+        if (adt_get_reg(adt, pmgr_path, "reg", i, &base, NULL) < 0)
+            break;
+        pmgr_log("pmgr:   reg[%d] = 0x%lx\n", i, base);
+    }
+    pmgr_log("pmgr: pmgr1 first 3 USB/ATC device struct dumps:\n");
     int dumped = 0;
     for (size_t i = 0; i < pmgr_devices_len && dumped < 3; i++) {
         const struct pmgr_device *d = &pmgr_devices[i];
@@ -547,13 +554,6 @@ void pmgr_dump_usb_devices(void)
                          raw[b+4],raw[b+5],raw[b+6],raw[b+7]);
             dumped++;
         }
-    }
-    pmgr_log("pmgr: pmgr1 reg[] map:\n");
-    for (int i = 0; i < 16; i++) {
-        u64 base;
-        if (adt_get_reg(adt, pmgr_path, "reg", i, &base, NULL) < 0)
-            break;
-        pmgr_log("pmgr:   reg[%d] = 0x%lx\n", i, base);
     }
     pmgr_log_flush();
 }
