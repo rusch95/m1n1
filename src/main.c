@@ -134,6 +134,7 @@ void run_actions(void)
 #endif
 
     printf("Build: m1n1 %s (%s %s)\n", m1n1_version, __DATE__, __TIME__);
+    nvme_init();
     pmgr_dump_usb_devices();
     printf("Running proxy...\n");
 
