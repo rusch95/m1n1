@@ -548,3 +548,25 @@ bool nvme_read(u32 nsid, u64 lba, void *buffer)
 
     return nvme_exec_command(&ioq, &cmd, NULL);
 }
+
+bool nvme_write(u32 nsid, u64 lba, const void *buffer)
+{
+    struct nvme_command cmd;
+    u64 buffer_addr = (u64)buffer;
+
+    if (!nvme_initialized)
+        return false;
+
+    if (buffer_addr & (SZ_4K - 1))
+        return false;
+
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.opcode = NVME_CMD_WRITE;
+    cmd.nsid = nsid;
+    cmd.prp1 = buffer_addr;
+    cmd.cdw10 = lba;
+    cmd.cdw11 = lba >> 32;
+    cmd.cdw12 = 1; // 4096 bytes
+
+    return nvme_exec_command(&ioq, &cmd, NULL);
+}

@@ -2,9 +2,51 @@
 
 #include "pmgr.h"
 #include "adt.h"
+#include "nvme.h"
 #include "string.h"
 #include "types.h"
 #include "utils.h"
+#include "vsprintf.h"
+
+/*
+ * Debug log buffer — written to disk0 NS1 at DEBUG_LOG_LBA after each dump.
+ * LBA 64 sits in the GPT free gap (LBAs 34-2047, before the first partition).
+ * Verify with: sudo gpt show /dev/disk0   (from macOS or 1TR)
+ * Read back with: dd if=/dev/disk0 bs=4096 skip=32 count=1 | strings
+ * (LBA 64 at 512-byte sectors = byte offset 32768 = 4096-byte block 8; or
+ *  with 4096-byte blocks: skip=8)
+ */
+#define DEBUG_LOG_NSID 1
+#define DEBUG_LOG_LBA  64  /* GPT free gap — before first APFS partition */
+#define DEBUG_LOG_SIZE 4096
+
+static u8 pmgr_log_buf[DEBUG_LOG_SIZE] __attribute__((aligned(DEBUG_LOG_SIZE)));
+static size_t pmgr_log_pos;
+
+static void pmgr_log(const char *fmt, ...)
+{
+    char tmp[256];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(tmp, sizeof(tmp), fmt, args);
+    va_end(args);
+
+    printf("%s", tmp);  /* to framebuffer/uart */
+
+    size_t len = strlen(tmp);
+    if (pmgr_log_pos + len < DEBUG_LOG_SIZE - 1) {
+        memcpy(pmgr_log_buf + pmgr_log_pos, tmp, len);
+        pmgr_log_pos += len;
+    }
+}
+
+static void pmgr_log_flush(void)
+{
+    if (!nvme_write(DEBUG_LOG_NSID, DEBUG_LOG_LBA, pmgr_log_buf))
+        printf("pmgr: debug log NVMe write failed\n");
+    else
+        printf("pmgr: debug log saved to disk0 LBA %d (4096 bytes)\n", DEBUG_LOG_LBA);
+}
 
 #define PMGR_RESET        BIT(31)
 #define PMGR_AUTO_ENABLE  BIT(28)
@@ -498,21 +540,22 @@ void pmgr_dump_usb_devices(void)
         if (strstr(d->name, "USB") || strstr(d->name, "ATC") || strstr(d->name, "DRD") ||
             strstr(d->name, "DART")) {
             const u8 *raw = (const u8 *)d;
-            printf("pmgr: [%s]\n", d->name);
+            pmgr_log("pmgr: [%s]\n", d->name);
             for (int b = 0; b < 48; b += 8)
-                printf(" [%2d] %02x%02x%02x%02x %02x%02x%02x%02x\n", b,
-                       raw[b],raw[b+1],raw[b+2],raw[b+3],
-                       raw[b+4],raw[b+5],raw[b+6],raw[b+7]);
+                pmgr_log(" [%2d] %02x%02x%02x%02x %02x%02x%02x%02x\n", b,
+                         raw[b],raw[b+1],raw[b+2],raw[b+3],
+                         raw[b+4],raw[b+5],raw[b+6],raw[b+7]);
             dumped++;
         }
     }
-    printf("pmgr: pmgr1 reg[] map:\n");
+    pmgr_log("pmgr: pmgr1 reg[] map:\n");
     for (int i = 0; i < 16; i++) {
         u64 base;
         if (adt_get_reg(adt, pmgr_path, "reg", i, &base, NULL) < 0)
             break;
-        printf("pmgr:   reg[%d] = 0x%lx\n", i, base);
+        pmgr_log("pmgr:   reg[%d] = 0x%lx\n", i, base);
     }
+    pmgr_log_flush();
 }
 
 u32 pmgr_get_feature(const char *name)
