@@ -491,13 +491,6 @@ void pmgr_dump_usb_devices(void)
 {
     if (!pmgr1_mode)
         return;
-    printf("pmgr: pmgr1 reg[] map:\n");
-    for (int i = 0; i < 16; i++) {
-        u64 base;
-        if (adt_get_reg(adt, pmgr_path, "reg", i, &base, NULL) < 0)
-            break;
-        printf("pmgr:   reg[%d] = 0x%lx\n", i, base);
-    }
     printf("pmgr: pmgr1 USB/ATC/DART/DRD device scan:\n");
     for (size_t i = 0; i < pmgr_devices_len; i++) {
         const struct pmgr_device *d = &pmgr_devices[i];
@@ -508,6 +501,13 @@ void pmgr_dump_usb_devices(void)
             printf("pmgr:   %-20s psreg=%d psidx=%d addr=0x%lx val=0x%08x\n",
                    d->name, d->psreg_idx, d->addr_offset, addr, val);
         }
+    }
+    printf("pmgr: pmgr1 reg[] map:\n");
+    for (int i = 0; i < 16; i++) {
+        u64 base;
+        if (adt_get_reg(adt, pmgr_path, "reg", i, &base, NULL) < 0)
+            break;
+        printf("pmgr:   reg[%d] = 0x%lx\n", i, base);
     }
 }
 
