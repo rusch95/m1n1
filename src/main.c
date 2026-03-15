@@ -127,14 +127,25 @@ void run_actions(void)
     printf("No valid payload found\n");
 
 #ifndef BRINGUP
-    if (!usb_up) {
+    if (!usb_up)
         usb_init();
-        usb_iodev_init();
-    }
 #endif
 
     printf("Build: m1n1 %s (%s %s)\n", m1n1_version, __DATE__, __TIME__);
     pmgr_dump_usb_devices();
+
+#ifndef BRINGUP
+    if (!usb_up)
+        usb_iodev_init();
+#endif
+
+    for (int i = 0; i < USB_IODEV_COUNT; i++) {
+        iodev_usage_t u = iodev_get_usage(IODEV_USB0 + i);
+        if (u)
+            printf("pmgr: USB%d registered (usage=0x%x)\n", i, u);
+        else
+            printf("pmgr: USB%d NOT registered\n", i);
+    }
     printf("Running proxy...\n");
 
     uartproxy_run(NULL);

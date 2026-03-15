@@ -74,13 +74,13 @@ static dart_dev_t *usb_dart_init(u32 idx)
         indexed = false;
     }
     if (mapper_offset < 0) {
-        // Device not present
+        printf("usb: dart%u mapper not found in ADT\n", idx);
         return NULL;
     }
 
     u32 dart_idx;
     if (ADT_GETPROP(adt, mapper_offset, "reg", &dart_idx) < 0) {
-        printf("usb: Error getting DART %s device index/\n", path);
+        printf("usb: Error getting DART %s device index\n", path);
         return NULL;
     }
 
@@ -90,6 +90,7 @@ static dart_dev_t *usb_dart_init(u32 idx)
         strncpy(path, "/arm-io/dart-usb", sizeof(path) - 1);
         path[sizeof(path) - 1] = '\0';
     }
+    printf("usb: dart%u init: path=%s idx=%u\n", idx, path, dart_idx);
     return dart_init_adt(path, 1, dart_idx, false);
 }
 
@@ -133,10 +134,12 @@ static int usb_drd_get_regs(u32 idx, struct usb_drd_regs *regs)
         return -1;
     }
     if (adt_get_reg(adt, adt_drd_path, "reg", 3, &regs->drd_regs_unk3, NULL) < 0) {
-        printf("usb: Error getting reg with index 3 for %s.\n", drd_path);
+        printf("usb: FAIL reg[3] missing for %s (A18 Pro may have fewer regs)\n", drd_path);
         return -1;
     }
 
+    printf("usb: drd regs ok: drd=0x%lx unk3=0x%lx atc=0x%lx\n",
+           regs->drd_regs, regs->drd_regs_unk3, regs->atc);
     return 0;
 }
 
@@ -182,6 +185,16 @@ int usb_phy_bringup(u32 idx)
             printf("usb: pmgr_adt_power_enable(%s) failed\n", path);
             return -1;
         }
+    }
+
+    // On t8140 (A18 Pro), ATC0_USB_AON requires SPMI and can't be enabled from pmgr alone.
+    // The recursive failure aborts before ATC0_USB (DWC3 clock gate) is enabled.
+    // Use pmgr_power_on to enable ATC0_USB directly, bypassing parent recursion.
+    if (idx == 0) {
+        if (pmgr_power_on(0, "ATC0_USB") < 0)
+            printf("usb: direct ATC0_USB enable failed\n");
+        else
+            printf("usb: ATC0_USB direct enable ok\n");
     }
 
     write32(usb_regs.atc + 0x08, 0x01c1000f);
