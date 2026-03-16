@@ -307,17 +307,20 @@ void usb_spmi_init(void)
         else
             printf("usb: SPMI wakeup Dialog PMU ok\n");
 
-        // Diagnostic: read 16 bytes starting at SPMI reg 0x6000 (first ptmu-region).
-        // Power domain enable bits for ATC0_USB_AON should be somewhere in 0x6000-0x61FF.
+        // Probe known-accessible SPMI registers (from pmu-main@E ADT info-* properties).
+        // 0x6000 (ptmu-region) NAKs — those are Dialog PMU firmware SRAM, only readable
+        // after the firmware's initialization sequence unlocks them.
+        // 0xF700 = info-leg_scrpad (panic counter area) — direct EXT_READL, always valid.
+        // 0x8000 = info-scrpad (16 bytes, always valid).
         u8 rgn[8];
-        if (spmi_ext_read_long(pmu_spmi, 0xE, 0x6000, rgn, 8) == 0)
-            printf("usb: Dialog PMU 0x6000: %02x %02x %02x %02x %02x %02x %02x %02x\n",
+        if (spmi_ext_read_long(pmu_spmi, 0xE, 0xF700, rgn, 8) == 0)
+            printf("usb: PMU 0xF700(leg_scrpad): %02x %02x %02x %02x %02x %02x %02x %02x\n",
                    rgn[0], rgn[1], rgn[2], rgn[3],
                    rgn[4], rgn[5], rgn[6], rgn[7]);
         else
-            printf("usb: Dialog PMU 0x6000 read failed (PMU asleep or unpowered?)\n");
-        if (spmi_ext_read_long(pmu_spmi, 0xE, 0x6008, rgn, 8) == 0)
-            printf("usb: Dialog PMU 0x6008: %02x %02x %02x %02x %02x %02x %02x %02x\n",
+            printf("usb: PMU 0xF700 read failed (EXT_READL broken?)\n");
+        if (spmi_ext_read_long(pmu_spmi, 0xE, 0x8000, rgn, 8) == 0)
+            printf("usb: PMU 0x8000(scrpad):    %02x %02x %02x %02x %02x %02x %02x %02x\n",
                    rgn[0], rgn[1], rgn[2], rgn[3],
                    rgn[4], rgn[5], rgn[6], rgn[7]);
 
