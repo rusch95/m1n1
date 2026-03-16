@@ -7,6 +7,7 @@
 #include "iodev.h"
 #include "malloc.h"
 #include "pmgr.h"
+#include "spmi.h"
 #include "string.h"
 #include "tps6598x.h"
 #include "types.h"
@@ -187,12 +188,14 @@ int usb_phy_bringup(u32 idx)
         }
     }
 
-    // On t8140 (A18 Pro), ATC0_USB_AON requires SPMI and can't be enabled from pmgr alone.
-    // The recursive failure aborts before ATC0_USB (DWC3 clock gate) is enabled.
-    // Use pmgr_power_on to enable ATC0_USB directly, bypassing parent recursion.
+    // On t8140 (A18 Pro), ATC0_USB_AON requires the Dialog PMU (nub-spmi0, pmu-main)
+    // to enable its power rail before the pmgr register will ACK the mode change.
+    // Without that, pmgr_set_mode_recursive aborts on parent failure before
+    // ATC0_USB (DWC3 clock gate) is ever touched. Direct enable attempt below
+    // hits the same blocked register — retained for diagnostic output only.
     if (idx == 0) {
         if (pmgr_power_on(0, "ATC0_USB") < 0)
-            printf("usb: direct ATC0_USB enable failed\n");
+            printf("usb: ATC0_USB direct enable failed (expected if Dialog PMU not ready)\n");
         else
             printf("usb: ATC0_USB direct enable ok\n");
     }
@@ -307,6 +310,39 @@ static tps6598x_dev_t *hpm_init(i2c_dev_t *i2c, const char *hpm_path)
 
 void usb_spmi_init(void)
 {
+    // On t8140 (A18 Pro), ATC0_USB_AON is power-gated at boot and its pmgr register
+    // times out because the Dialog "baku" PMU (not the USB HPM) must be active before
+    // pmgr power-state transitions on this domain complete. Send WAKEUP to the Dialog
+    // PMU (pmu-main, SPMI addr 0xE) on the system PMU bus (nub-spmi0@F8714000).
+    // NOTE: hpm0 on nub-spmi-a0 is the TI SN2012xx USB-C controller — separate bus,
+    // different function, does NOT control ATC0_USB_AON.
+    spmi_dev_t *pmu_spmi = spmi_init("/arm-io/nub-spmi0");
+    if (pmu_spmi) {
+        printf("usb: sending SPMI wakeup to Dialog PMU (addr=0xE) on nub-spmi0\n");
+        if (spmi_send_wakeup(pmu_spmi, 0xE) < 0)
+            printf("usb: SPMI wakeup Dialog PMU failed\n");
+        else
+            printf("usb: SPMI wakeup Dialog PMU ok\n");
+
+        // Diagnostic: read 16 bytes starting at SPMI reg 0x6000 (first ptmu-region).
+        // Power domain enable bits for ATC0_USB_AON should be somewhere in 0x6000-0x61FF.
+        u8 rgn[8];
+        if (spmi_ext_read_long(pmu_spmi, 0xE, 0x6000, rgn, 8) == 0)
+            printf("usb: Dialog PMU 0x6000: %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                   rgn[0], rgn[1], rgn[2], rgn[3],
+                   rgn[4], rgn[5], rgn[6], rgn[7]);
+        else
+            printf("usb: Dialog PMU 0x6000 read failed (PMU asleep or unpowered?)\n");
+        if (spmi_ext_read_long(pmu_spmi, 0xE, 0x6008, rgn, 8) == 0)
+            printf("usb: Dialog PMU 0x6008: %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                   rgn[0], rgn[1], rgn[2], rgn[3],
+                   rgn[4], rgn[5], rgn[6], rgn[7]);
+
+        spmi_shutdown(pmu_spmi);
+    } else {
+        printf("usb: nub-spmi0 init failed, continuing without Dialog PMU wakeup\n");
+    }
+
     for (int idx = 0; idx < USB_IODEV_COUNT; ++idx)
         usb_phy_bringup(idx); /* Fails on missing devices, just continue */
 
