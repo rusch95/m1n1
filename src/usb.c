@@ -2,6 +2,7 @@
 
 #include "usb.h"
 #include "adt.h"
+#include "baku_pmu.h"
 #include "dart.h"
 #include "i2c.h"
 #include "iodev.h"
@@ -296,37 +297,70 @@ void usb_spmi_init(void)
     // On t8140 (A18 Pro), ATC0_USB_AON is power-gated at boot and its pmgr register
     // times out because the Dialog "baku" PMU (not the USB HPM) must be active before
     // pmgr power-state transitions on this domain complete. Send WAKEUP to the Dialog
-    // PMU (pmu-main, SPMI addr 0xE) on the system PMU bus (nub-spmi0@F8714000).
+    // PMU (pmu-main, SPMI addr=0xE) on the system PMU bus (nub-spmi0@F8714000).
     // NOTE: hpm0 on nub-spmi-a0 is the TI SN2012xx USB-C controller — separate bus,
     // different function, does NOT control ATC0_USB_AON.
-    spmi_dev_t *pmu_spmi = spmi_init("/arm-io/nub-spmi0");
+    //
+    // See src/baku_pmu.h for the full Dialog baku PMU register map derived from
+    // mac17g kernelcache AppleDialogSPMIPMU reverse engineering.
+    spmi_dev_t *pmu_spmi = spmi_init(BAKU_SPMI_NODE);
     if (pmu_spmi) {
-        printf("usb: sending SPMI wakeup to Dialog PMU (addr=0xE) on nub-spmi0\n");
-        if (spmi_send_wakeup(pmu_spmi, 0xE) < 0)
+        u8 buf[8];
+
+        printf("usb: sending SPMI wakeup to Dialog baku PMU (addr=0x%x) on %s\n",
+               BAKU_SPMI_ADDR, BAKU_SPMI_NODE);
+        if (spmi_send_wakeup(pmu_spmi, BAKU_SPMI_ADDR) < 0)
             printf("usb: SPMI wakeup Dialog PMU failed\n");
         else
             printf("usb: SPMI wakeup Dialog PMU ok\n");
 
-        // Probe known-accessible SPMI registers (from pmu-main@E ADT info-* properties).
-        // 0x6000 (ptmu-region) NAKs — those are Dialog PMU firmware SRAM, only readable
-        // after the firmware's initialization sequence unlocks them.
-        // 0xF700 = info-leg_scrpad (panic counter area) — direct EXT_READL, always valid.
-        // 0x8000 = info-scrpad (16 bytes, always valid).
-        u8 rgn[8];
-        if (spmi_ext_read_long(pmu_spmi, 0xE, 0xF700, rgn, 8) == 0)
-            printf("usb: PMU 0xF700(leg_scrpad): %02x %02x %02x %02x %02x %02x %02x %02x\n",
-                   rgn[0], rgn[1], rgn[2], rgn[3],
-                   rgn[4], rgn[5], rgn[6], rgn[7]);
+        // Probe BAKU_PM_SETTING (0xF801) — the main PMU health register.
+        // A successful read confirms the SPMI EXT_READL link to the PMU is active.
+        // This register always responds; it does not require PMU firmware unlock.
+        if (spmi_ext_read_long(pmu_spmi, BAKU_SPMI_ADDR, BAKU_PM_SETTING, buf, 1) == 0)
+            printf("usb: PMU 0x%04x(pm_setting)=%02x — PMU SPMI link OK\n",
+                   BAKU_PM_SETTING, buf[0]);
         else
-            printf("usb: PMU 0xF700 read failed (EXT_READL broken?)\n");
-        if (spmi_ext_read_long(pmu_spmi, 0xE, 0x8000, rgn, 8) == 0)
-            printf("usb: PMU 0x8000(scrpad):    %02x %02x %02x %02x %02x %02x %02x %02x\n",
-                   rgn[0], rgn[1], rgn[2], rgn[3],
-                   rgn[4], rgn[5], rgn[6], rgn[7]);
+            printf("usb: PMU 0x%04x(pm_setting) read FAILED — PMU not responding\n",
+                   BAKU_PM_SETTING);
+
+        // Probe BAKU_LEG_SCRPAD (0xF700) — legacy scratchpad / panic counter area.
+        // This area is directly mapped and always readable without firmware involvement.
+        if (spmi_ext_read_long(pmu_spmi, BAKU_SPMI_ADDR, BAKU_LEG_SCRPAD, buf, 8) == 0)
+            printf("usb: PMU 0x%04x(leg_scrpad): %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                   BAKU_LEG_SCRPAD,
+                   buf[0], buf[1], buf[2], buf[3],
+                   buf[4], buf[5], buf[6], buf[7]);
+        else
+            printf("usb: PMU 0x%04x(leg_scrpad) read FAILED\n", BAKU_LEG_SCRPAD);
+
+        // Probe BAKU_LPM_CTRL_BASE (0x8FDC) — LPM control register.
+        // SLPSMC (Sleep SMC) is enabled on mac17g (info-has_slpsmc=1).
+        // The AppleDialogSPMIPMU driver writes this register during SLPSMC init.
+        // If SLPSMC init has run (i.e., iBoot ran it), this should be readable.
+        if (spmi_ext_read_long(pmu_spmi, BAKU_SPMI_ADDR, BAKU_LPM_CTRL_BASE, buf, 4) == 0)
+            printf("usb: PMU 0x%04x(lpm_ctrl): %02x %02x %02x %02x\n",
+                   BAKU_LPM_CTRL_BASE, buf[0], buf[1], buf[2], buf[3]);
+        else
+            printf("usb: PMU 0x%04x(lpm_ctrl) read FAILED (SLPSMC not init'd?)\n",
+                   BAKU_LPM_CTRL_BASE);
+
+        // Probe first 8 bytes of BAKU_PTMU_BASE (0x6000) — power domain region 0.
+        // These are managed by the PMU firmware. They NAK until the firmware has
+        // completed its init sequence. iBoot should have run the firmware; if so
+        // this will succeed and give us the current power domain state.
+        if (spmi_ext_read_long(pmu_spmi, BAKU_SPMI_ADDR, BAKU_PTMU_BASE, buf, 8) == 0)
+            printf("usb: PMU 0x%04x(ptmu[0]):  %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                   BAKU_PTMU_BASE,
+                   buf[0], buf[1], buf[2], buf[3],
+                   buf[4], buf[5], buf[6], buf[7]);
+        else
+            printf("usb: PMU 0x%04x(ptmu[0]) read FAILED (PMU fw not init'd or locked)\n",
+                   BAKU_PTMU_BASE);
 
         spmi_shutdown(pmu_spmi);
     } else {
-        printf("usb: nub-spmi0 init failed, continuing without Dialog PMU wakeup\n");
+        printf("usb: %s init failed, continuing without Dialog PMU wakeup\n", BAKU_SPMI_NODE);
     }
 
     for (int idx = 0; idx < USB_IODEV_COUNT; ++idx)
