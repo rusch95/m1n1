@@ -214,8 +214,6 @@ static int pmgr_set_mode_recursive(u8 die, u16 id, u8 target_mode, bool recurse)
         uintptr_t addr = pmgr_device_get_addr(die, device);
         if (!addr)
             return -1;
-        printf("pmgr: setting mode %x for %d.%s (psreg=%d off=%d) at 0x%lx\n",
-               target_mode, die, device->name, device->psreg_idx, device->addr_offset, addr);
         if (pmgr_set_mode(addr, target_mode))
             return -1;
     }
@@ -235,8 +233,6 @@ static int pmgr_set_mode_recursive(u8 die, u16 id, u8 target_mode, bool recurse)
         uintptr_t addr = pmgr_device_get_addr(die, device);
         if (!addr)
             return -1;
-        printf("pmgr: setting mode %x for %d.%s (psreg=%d off=%d) at 0x%lx\n",
-               target_mode, die, device->name, device->psreg_idx, device->addr_offset, addr);
         if (pmgr_set_mode(addr, target_mode))
             return -1;
     }
@@ -261,10 +257,8 @@ int pmgr_power_disable(u32 id)
 static int pmgr_adt_find_devices(const char *path, const u32 **devices, u32 *n_devices)
 {
     int node_offset = adt_path_offset(adt, path);
-    if (node_offset < 0) {
-        printf("pmgr: Error getting node %s\n", path);
+    if (node_offset < 0)
         return -1;
-    }
 
     *devices = adt_getprop(adt, node_offset, "clock-gates", n_devices);
     if (*devices == NULL || *n_devices == 0) {

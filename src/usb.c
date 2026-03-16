@@ -183,18 +183,6 @@ int usb_phy_bringup(u32 idx)
         }
     }
 
-    // On t8140 (A18 Pro), ATC0_USB_AON requires the Dialog PMU (nub-spmi0, pmu-main)
-    // to enable its power rail before the pmgr register will ACK the mode change.
-    // Without that, pmgr_set_mode_recursive aborts on parent failure before
-    // ATC0_USB (DWC3 clock gate) is ever touched. Direct enable attempt below
-    // hits the same blocked register — retained for diagnostic output only.
-    if (idx == 0) {
-        if (pmgr_power_on(0, "ATC0_USB") < 0)
-            printf("usb: ATC0_USB direct enable failed (expected if Dialog PMU not ready)\n");
-        else
-            printf("usb: ATC0_USB direct enable ok\n");
-    }
-
     write32(usb_regs.atc + 0x08, 0x01c1000f);
     write32(usb_regs.atc + 0x04, 0x00000003);
     write32(usb_regs.atc + 0x04, 0x00000000);
