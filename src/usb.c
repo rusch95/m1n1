@@ -71,13 +71,11 @@ static dart_dev_t *usb_dart_init(u32 idx)
         path[sizeof(path) - 1] = '\0';
         mapper_offset = adt_path_offset(adt, path);
         if (mapper_offset >= 0)
-            printf("usb: using un-indexed dart path (t8140 compat)\n");
+            ;
         indexed = false;
     }
-    if (mapper_offset < 0) {
-        printf("usb: dart%u mapper not found in ADT\n", idx);
+    if (mapper_offset < 0)
         return NULL;
-    }
 
     u32 dart_idx;
     if (ADT_GETPROP(adt, mapper_offset, "reg", &dart_idx) < 0) {
@@ -91,7 +89,6 @@ static dart_dev_t *usb_dart_init(u32 idx)
         strncpy(path, "/arm-io/dart-usb", sizeof(path) - 1);
         path[sizeof(path) - 1] = '\0';
     }
-    printf("usb: dart%u init: path=%s idx=%u\n", idx, path, dart_idx);
     return dart_init_adt(path, 1, dart_idx, false);
 }
 
@@ -112,7 +109,7 @@ static int usb_drd_get_regs(u32 idx, struct usb_drd_regs *regs)
         drd_path[sizeof(drd_path) - 1] = '\0';
         adt_drd_offset = adt_path_offset_trace(adt, drd_path, adt_drd_path);
         if (adt_drd_offset >= 0)
-            printf("usb: using un-indexed drd path (t8140 compat)\n");
+            ;
     }
     if (adt_drd_offset < 0) {
         // Nonexistent device
@@ -139,8 +136,6 @@ static int usb_drd_get_regs(u32 idx, struct usb_drd_regs *regs)
         return -1;
     }
 
-    printf("usb: drd regs ok: drd=0x%lx unk3=0x%lx atc=0x%lx\n",
-           regs->drd_regs, regs->drd_regs_unk3, regs->atc);
     return 0;
 }
 

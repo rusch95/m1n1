@@ -134,12 +134,6 @@ static uintptr_t pmgr_get_psreg(u8 idx)
 
 int pmgr_set_mode(uintptr_t addr, u8 target_mode)
 {
-    u32 before = read32(addr);
-    printf("pmgr: [0x%lx] before=0x%08x actual=%x target=%x -> setting mode %x\n",
-           addr, before,
-           (unsigned)FIELD_GET(PMGR_PS_ACTUAL, before),
-           (unsigned)FIELD_GET(PMGR_PS_TARGET, before),
-           target_mode);
     mask32(addr, PMGR_PS_TARGET, FIELD_PREP(PMGR_PS_TARGET, target_mode));
     if (poll32(addr, PMGR_PS_ACTUAL, FIELD_PREP(PMGR_PS_ACTUAL, target_mode), PMGR_POLL_TIMEOUT) <
         0) {

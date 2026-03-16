@@ -139,12 +139,9 @@ void run_actions(void)
         usb_iodev_init();
 #endif
 
-    for (int i = 0; i < USB_IODEV_COUNT; i++) {
-        iodev_usage_t u = iodev_get_usage(IODEV_USB0 + i);
-        if (u)
-            printf("pmgr: USB%d registered (usage=0x%x)\n", i, u);
-        else
-            printf("pmgr: USB%d NOT registered\n", i);
+    {
+        iodev_usage_t u = iodev_get_usage(IODEV_USB0);
+        printf("usb: USB0 %s\n", u ? "registered" : "NOT registered");
     }
     printf("Running proxy...\n");
 
