@@ -8,6 +8,7 @@
 #include "iodev.h"
 #include "malloc.h"
 #include "pmgr.h"
+#include "smc.h"
 #include "spmi.h"
 #include "string.h"
 #include "tps6598x.h"
@@ -310,37 +311,36 @@ void usb_spmi_init(void)
     //
     // See src/baku_pmu.h for Dialog baku PMU register map.
 
-    // Step 1: Try to enable the SPMI controller power domain via pmgr.
-    // "SPMI" is the power domain name used for older Apple chips (T8012/T8015);
-    // on t8140 it may be different or absent. We try multiple names and log the result.
-    // pmgr_power_on() calls pmgr_set_mode() directly (non-recursive) so it won't
-    // get stuck on parent domains that require PMU cooperation.
-    {
-        static const char *const spmi_pd_names[] = {"SPMI", "SPMI0", "NUB_SPMI", NULL};
-        int found = 0;
-        for (int i = 0; spmi_pd_names[i]; i++) {
-            int r = pmgr_power_on(0, spmi_pd_names[i]);
-            printf("usb: pmgr_power_on(\"%s\") = %d\n", spmi_pd_names[i], r);
-            if (r == 0) {
-                found = 1;
-                break;
-            }
-        }
-        if (!found)
-            printf("usb: no SPMI pmgr domain found — continuing anyway\n");
-    }
+    // ROOT CAUSE IDENTIFIED (Iteration 6, 2026-03-16):
+    // PMU firmware is in "external standby" mode post-iBoot. It ACKs WAKEUP/RESET
+    // (management commands) but NACKs all register reads (ret=-2 = SPMI_ERR_BUS_IO).
+    // macOS fixes this via: AppleDialogSPMIPMU calls function-external_standby on
+    // pmu-main@E, which IOKit routes to AppleSMCInterface (smc-pmu, phandle 0x89),
+    // which sends an SMC key write to the AOP firmware to exit external standby.
+    //
+    // The function-external_standby specifier is "Wyek"+"ESBM" (0x5779656b 0x4553424d).
+    // Hypothesis A: SMC key="ESBM" (0x4553424d), value=0 or 1
+    // Hypothesis B: SMC key="Wyek" (0x5779656b), value=0x4553424d
+    //
+    // smc_init() uses /arm-io/smc + RTKit endpoint 0x20 (SMC_ENDPOINT).
+    // rtkit_boot() is safe even when firmware is already running (sends IOP_PWR_STATE).
 
-    // Step 2: Dump STATUS from all three register regions to understand their purpose.
+    // Step 1: Try SMC-based "exit external standby" for the Dialog PMU.
     {
-        int adt_path[8];
-        int adt_off = adt_path_offset_trace(adt, BAKU_SPMI_NODE, adt_path);
-        if (adt_off >= 0) {
-            for (int ri = 0; ri < 3; ri++) {
-                u64 base = 0, sz = 0;
-                if (adt_get_reg(adt, adt_path, "reg", ri, &base, &sz) == 0)
-                    printf("usb: spmi reg[%d] base=0x%lx status=0x%08x\n",
-                           ri, base, read32(base));
-            }
+        smc_dev_t *smc = smc_init();
+        if (!smc) {
+            printf("usb: SMC init failed — cannot send external_standby exit\n");
+        } else {
+            printf("usb: SMC init OK\n");
+            // Hypothesis A: key "ESBM" = External StandBy Mode
+            int ra0 = smc_write_u32(smc, 0x4553424d, 0);
+            printf("usb: SMC 'ESBM'=0 ret=%d\n", ra0);
+            int ra1 = smc_write_u32(smc, 0x4553424d, 1);
+            printf("usb: SMC 'ESBM'=1 ret=%d\n", ra1);
+            // Hypothesis B: key "Wyek", value = "ESBM" as u32
+            int rb = smc_write_u32(smc, 0x5779656b, 0x4553424d);
+            printf("usb: SMC 'Wyek'=0x4553424d ret=%d\n", rb);
+            smc_shutdown(smc);
         }
     }
 
@@ -350,20 +350,24 @@ void usb_spmi_init(void)
         goto skip_spmi;
     }
 
-    // Step 3: RESET (stronger than WAKEUP — works from any state, not just SLEEP).
-    // Then probe PM_SETTING (0xF801) which is the Dialog PMU health register.
-    // If this succeeds, the SPMI link is live.
-    printf("usb: sending SPMI RESET to PMU addr 0x%x\n", BAKU_SPMI_ADDR);
-    spmi_send_reset(pmu_spmi, BAKU_SPMI_ADDR);
-    mdelay(50);
-
+    // Step 2: Try PM_SETTING read after SMC writes — should succeed if standby exited.
+    // Also try immediately after RESET to cover the case where PMU accepts reads
+    // only from specific states.
     {
         u8 buf[1];
         int r = spmi_ext_read_long(pmu_spmi, BAKU_SPMI_ADDR, BAKU_PM_SETTING, buf, 1);
         if (r == 0)
-            printf("usb: PMU pm_setting(0xF801) = 0x%02x OK\n", buf[0]);
-        else
-            printf("usb: PMU pm_setting(0xF801) FAILED ret=%d\n", r);
+            printf("usb: PMU pm_setting(0xF801)=0x%02x OK — external standby exited!\n",
+                   buf[0]);
+        else {
+            printf("usb: PMU pm_setting(0xF801) FAILED ret=%d — standby still active\n", r);
+            // One more try after explicit RESET
+            spmi_send_reset(pmu_spmi, BAKU_SPMI_ADDR);
+            mdelay(50);
+            r = spmi_ext_read_long(pmu_spmi, BAKU_SPMI_ADDR, BAKU_PM_SETTING, buf, 1);
+            printf("usb: PMU pm_setting post-RESET ret=%d%s\n", r,
+                   r == 0 ? " OK" : " FAILED");
+        }
     }
 
     spmi_shutdown(pmu_spmi);
