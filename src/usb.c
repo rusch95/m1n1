@@ -294,72 +294,81 @@ static tps6598x_dev_t *hpm_init(i2c_dev_t *i2c, const char *hpm_path)
 
 void usb_spmi_init(void)
 {
-    // On t8140 (A18 Pro), ATC0_USB_AON is power-gated at boot and its pmgr register
-    // times out because the Dialog "baku" PMU (not the USB HPM) must be active before
-    // pmgr power-state transitions on this domain complete. The PMU is accessed via SPMI
-    // on nub-spmi0@308714000; the SPMI bus controller itself requires a pmgr power-on
-    // (AppleARMSPMIController::start calls enablePsdService = pmgr power domain enable)
-    // before any SPMI commands will work. Without it, STATUS looks valid but all commands
-    // silently fail (synthetic NAK from an unclocked controller).
+    // On t8140 (A18 Pro), ATC0_USB_AON is power-gated at boot. The Dialog "baku" PMU
+    // controls the USB power rail; the PMU is accessed via SPMI on nub-spmi0@308714000.
     //
-    // See src/baku_pmu.h for the full Dialog baku PMU register map derived from
-    // mac17g kernelcache AppleDialogSPMIPMU reverse engineering.
-    if (pmgr_adt_power_enable(BAKU_SPMI_NODE) < 0)
-        printf("usb: pmgr enable %s failed (may be ok if already on)\n", BAKU_SPMI_NODE);
-    spmi_dev_t *pmu_spmi = spmi_init(BAKU_SPMI_NODE);
-    if (pmu_spmi) {
-        u8 buf[8];
+    // Root cause hypothesis (Fifth iteration, 2026-03-16):
+    // macOS AppleARMSPMIController::start() calls enablePsdService() before any SPMI use.
+    // This maps to a pmgr power-domain enable for the SPMI controller clock gate.
+    // Without it, management commands (WAKEUP) pass but register reads (EXT_READL) time out
+    // because the reply path from the SPMI bus to the RX FIFO is clock-gated on the AP side.
+    //
+    // nub-spmi0 has THREE register regions:
+    //   reg[0] = 0x308714000 (FIFO: STATUS/CMD/REPLY) — used by spmi_init()/raw_command()
+    //   reg[1] = 0x308704000 (unknown — possibly bus master enable / arbitration)
+    //   reg[2] = 0x308700000 (unknown — possibly clock/power control)
+    //
+    // See src/baku_pmu.h for Dialog baku PMU register map.
 
-        // Extend MMIO dump to 0x3C to catch any enable/mode registers past 0x1C.
-        {
-            int adt_path[8];
-            int adt_off = adt_path_offset_trace(adt, BAKU_SPMI_NODE, adt_path);
-            u64 ctrl_base = 0;
-            if (adt_off >= 0)
-                adt_get_reg(adt, adt_path, "reg", 0, &ctrl_base, NULL);
-            if (ctrl_base)
-                printf("usb: spmi0 +00: %08x %08x %08x %08x %08x %08x %08x %08x\n"
-                       "usb: spmi0 +20: %08x %08x %08x %08x %08x %08x %08x %08x\n",
-                       read32(ctrl_base+0x00), read32(ctrl_base+0x04),
-                       read32(ctrl_base+0x08), read32(ctrl_base+0x0c),
-                       read32(ctrl_base+0x10), read32(ctrl_base+0x14),
-                       read32(ctrl_base+0x18), read32(ctrl_base+0x1c),
-                       read32(ctrl_base+0x20), read32(ctrl_base+0x24),
-                       read32(ctrl_base+0x28), read32(ctrl_base+0x2c),
-                       read32(ctrl_base+0x30), read32(ctrl_base+0x34),
-                       read32(ctrl_base+0x38), read32(ctrl_base+0x3c));
-        }
-
-        // Bus scan: WAKEUP all 16 SPMI addresses, record which ACK.
-        // Per SPMI spec, slaves in SLEEP state ACK WAKEUP but NAK all reads.
-        // This shows which addresses are populated.
-        {
-            u16 wakeup_mask = 0;
-            for (u8 a = 0; a < 16; a++) {
-                if (spmi_send_wakeup(pmu_spmi, a) == 0)
-                    wakeup_mask |= (1u << a);
+    // Step 1: Try to enable the SPMI controller power domain via pmgr.
+    // "SPMI" is the power domain name used for older Apple chips (T8012/T8015);
+    // on t8140 it may be different or absent. We try multiple names and log the result.
+    // pmgr_power_on() calls pmgr_set_mode() directly (non-recursive) so it won't
+    // get stuck on parent domains that require PMU cooperation.
+    {
+        static const char *const spmi_pd_names[] = {"SPMI", "SPMI0", "NUB_SPMI", NULL};
+        int found = 0;
+        for (int i = 0; spmi_pd_names[i]; i++) {
+            int r = pmgr_power_on(0, spmi_pd_names[i]);
+            printf("usb: pmgr_power_on(\"%s\") = %d\n", spmi_pd_names[i], r);
+            if (r == 0) {
+                found = 1;
+                break;
             }
-            printf("usb: SPMI wakeup ACK mask: 0x%04x (bit=addr)\n", wakeup_mask);
         }
-
-        // Wait 1s after bus-wide WAKEUP to allow PMU firmware to fully restart,
-        // then try EXT_READ (8-bit opcode 0x20) and EXT_READL (16-bit opcode 0x38)
-        // for reg 0x00 (mandatory SPMI device-ID, must respond on any compliant device).
-        mdelay(1000);
-        if (spmi_ext_read(pmu_spmi, BAKU_SPMI_ADDR, 0x00, buf, 1) == 0)
-            printf("usb: PMU EXT_READ  reg00=%02x ok after 1s\n", buf[0]);
-        else
-            printf("usb: PMU EXT_READ  reg00 FAILED after 1s\n");
-        if (spmi_ext_read_long(pmu_spmi, BAKU_SPMI_ADDR, 0x0000, buf, 1) == 0)
-            printf("usb: PMU EXT_READL reg00=%02x ok after 1s\n", buf[0]);
-        else
-            printf("usb: PMU EXT_READL reg00 FAILED after 1s\n");
-
-        spmi_shutdown(pmu_spmi);
-    } else {
-        printf("usb: %s init failed, continuing without Dialog PMU wakeup\n", BAKU_SPMI_NODE);
+        if (!found)
+            printf("usb: no SPMI pmgr domain found — continuing anyway\n");
     }
 
+    // Step 2: Dump STATUS from all three register regions to understand their purpose.
+    {
+        int adt_path[8];
+        int adt_off = adt_path_offset_trace(adt, BAKU_SPMI_NODE, adt_path);
+        if (adt_off >= 0) {
+            for (int ri = 0; ri < 3; ri++) {
+                u64 base = 0, sz = 0;
+                if (adt_get_reg(adt, adt_path, "reg", ri, &base, &sz) == 0)
+                    printf("usb: spmi reg[%d] base=0x%lx status=0x%08x\n",
+                           ri, base, read32(base));
+            }
+        }
+    }
+
+    spmi_dev_t *pmu_spmi = spmi_init(BAKU_SPMI_NODE);
+    if (!pmu_spmi) {
+        printf("usb: %s init failed\n", BAKU_SPMI_NODE);
+        goto skip_spmi;
+    }
+
+    // Step 3: RESET (stronger than WAKEUP — works from any state, not just SLEEP).
+    // Then probe PM_SETTING (0xF801) which is the Dialog PMU health register.
+    // If this succeeds, the SPMI link is live.
+    printf("usb: sending SPMI RESET to PMU addr 0x%x\n", BAKU_SPMI_ADDR);
+    spmi_send_reset(pmu_spmi, BAKU_SPMI_ADDR);
+    mdelay(50);
+
+    {
+        u8 buf[1];
+        int r = spmi_ext_read_long(pmu_spmi, BAKU_SPMI_ADDR, BAKU_PM_SETTING, buf, 1);
+        if (r == 0)
+            printf("usb: PMU pm_setting(0xF801) = 0x%02x OK\n", buf[0]);
+        else
+            printf("usb: PMU pm_setting(0xF801) FAILED ret=%d\n", r);
+    }
+
+    spmi_shutdown(pmu_spmi);
+
+skip_spmi:
     for (int idx = 0; idx < USB_IODEV_COUNT; ++idx)
         usb_phy_bringup(idx); /* Fails on missing devices, just continue */
 
